@@ -1,3 +1,4 @@
+# === Archivo: plotter.py ===
 import matplotlib.pyplot as plt
 from io import BytesIO
 from ta.volatility import BollingerBands
@@ -12,91 +13,87 @@ def plot_signal(
     target_pct: float = 0.02,
     stop_pct: float = 0.02,
 ):
-    plt.figure(figsize=(8, 4))
-    plt.plot(df["close"], label="Precio de Cierre", color="blue")
-    plt.plot(df["sma_fast"], label="SMA 9 (naranja)", color="orange")
-    plt.plot(df["sma_slow"], label="SMA 21 (verde)", color="green")
+    """
+    Genera un gráfico compacto y legible de la señal de BTC.
+    """
+    fig, ax = plt.subplots(figsize=(6, 3), dpi=150)
+    x = df.index
 
-    # Bollinger Bands (zona típica de precio)
+    # Precio y SMAs
+    ax.plot(x, df["close"], label="Precio de Cierre", linewidth=1.5, color="blue")
+    ax.plot(x, df["sma_fast"], label="SMA 9", linewidth=1, color="orange")
+    ax.plot(x, df["sma_slow"], label="SMA 21", linewidth=1, color="green")
+
+    # Bandas de Bollinger
     bb = BollingerBands(df["close"])
-    plt.fill_between(
-        df.index,
+    ax.fill_between(
+        x,
         bb.bollinger_lband(),
         bb.bollinger_hband(),
-        color="grey",
+        color="gray",
         alpha=0.2,
-        label="Bollinger Bands",
+        label="Bandas Bollinger",
     )
 
-    # Señal (sólo si es real)
-    if label != "NO_SIGNAL":
-        plt.scatter(
-            signal_idx,
-            df["close"].iloc[signal_idx],
-            marker="^",
-            s=100,
-            label=label,
-            color="purple",
-        )
-
-    # Tu punto de compra
+    # Precio de compra
     if buy_price is not None and purchase_idx is not None:
-        plt.scatter(
-            purchase_idx,
+        ax.axhline(
             buy_price,
-            marker="o",
-            s=80,
-            label=f"Tu compra: ${buy_price:.2f}",
             color="red",
+            linestyle="--",
+            label=f"Precio compra: ${buy_price:.2f}",
         )
-        plt.axhline(buy_price, linestyle="--", color="red", label=f"Precio compra")
+        ax.scatter(purchase_idx, buy_price, color="red", s=50)
 
-        # Líneas recomendadas ±2%
-        target = buy_price * (1 + target_pct)
-        stop = buy_price * (1 - stop_pct)
-        plt.axhline(
-            target,
+    # Niveles recomendados
+    if buy_price is not None:
+        target_price = buy_price * (1 + target_pct)
+        stop_price = buy_price * (1 - stop_pct)
+        ax.axhline(
+            target_price,
+            color="green",
             linestyle="-.",
-            color="darkgreen",
-            label=f"Máx. recom. (vender): ${target:.2f}",
+            label=f"Máx recom. venta: ${target_price:.2f}",
         )
-        plt.axhline(
-            stop,
+        ax.axhline(
+            stop_price,
+            color="blue",
             linestyle="-.",
-            color="darkred",
-            label=f"Mín. recom. (comprar): ${stop:.2f}",
+            label=f"Mín recom. compra: ${stop_price:.2f}",
         )
 
-    # Máximo y mínimo reales (con valor en leyenda)
+    # Máx/Mín reales
     max_val = df["close"].max()
+    min_val = df["close"].min()
     hi = df["close"].idxmax()
-    plt.scatter(
+    lo = df["close"].idxmin()
+    ax.scatter(
         hi,
         max_val,
         marker="^",
-        s=80,
-        label=f"Máximo rec.: ${max_val:.2f}",
         color="darkgreen",
+        s=50,
+        label=f"▲ Máx actual: ${max_val:.2f}",
     )
-    min_val = df["close"].min()
-    lo = df["close"].idxmin()
-    plt.scatter(
+    ax.scatter(
         lo,
         min_val,
         marker="v",
-        s=80,
-        label=f"Mínimo rec.: ${min_val:.2f}",
         color="darkblue",
+        s=50,
+        label=f"▼ Mín actual: ${min_val:.2f}",
     )
 
-    plt.title("Señal de BTC")
-    plt.xlabel("Periodo (5m cada uno)")
-    plt.ylabel("Precio (USD)")
-    plt.legend(loc="upper left", fontsize="small")
+    # Estética
+    ax.set_title("Señal de BTC", fontsize=10)
+    ax.set_xlabel("Periodo (5m cada uno)", fontsize=8)
+    ax.set_ylabel("Precio (USD)", fontsize=8)
+    ax.grid(True, linestyle=":", alpha=0.5)
+    ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.15), ncol=3, fontsize=6)
+    fig.tight_layout()
 
     buf = BytesIO()
-    plt.tight_layout()
-    plt.savefig(buf, format="png")
+    fig.savefig(buf, format="png")
     buf.seek(0)
-    plt.close()
+    plt.close(fig)
     return buf

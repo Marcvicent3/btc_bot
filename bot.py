@@ -1,19 +1,16 @@
+# === Archivo: bot.py ===
 import os
-import glob
 import csv
 import logging
+import asyncio
 from datetime import datetime
 from telegram import InputFile
-from telegram.ext import (
-    CommandHandler,
-    ContextTypes,
-    ApplicationBuilder,
-)
-import asyncio
+from telegram.ext import CommandHandler, ContextTypes, ApplicationBuilder
 
 import config
 import strategy
 from plotter import plot_signal
+from sentiment import get_sentiment
 
 # Logging
 logging.basicConfig(
@@ -23,7 +20,7 @@ logging.basicConfig(
 )
 
 
-# Subscripción y persistencia
+# — Suscripción y persistencia —
 def load_subscribers() -> set[int]:
     if not os.path.exists(config.SUBSCRIBERS_FILE):
         return set()
@@ -49,10 +46,6 @@ def get_last_buy_file(chat_id: int) -> str:
     return f"last_buy_price_{chat_id}.txt"
 
 
-def get_history_file(chat_id: int) -> str:
-    return f"btc_trades_history_{chat_id}.csv"
-
-
 def load_last_buy_price(chat_id: int) -> float:
     try:
         with open(get_last_buy_file(chat_id)) as f:
@@ -66,34 +59,34 @@ def save_last_buy_price(chat_id: int, price: float):
         f.write(str(price))
 
 
+def get_history_file(chat_id: int) -> str:
+    return f"btc_trades_history_{chat_id}.csv"
+
+
 def append_to_history(
     chat_id: int, ts: str, sig: str, price: float, rsi: float, usd: float, pct: float
 ):
     path = get_history_file(chat_id)
     exists = os.path.exists(path)
     try:
-        with open(path, "a", newline="") as csvfile:
-            writer = csv.writer(csvfile)
+        with open(path, "a", newline="") as f:
+            w = csv.writer(f)
             if not exists:
-                writer.writerow(
+                w.writerow(
                     ["timestamp", "signal", "price", "RSI", "USD_change", "%_change"]
                 )
-            writer.writerow([ts, sig, price, rsi, usd, pct])
+            w.writerow([ts, sig, price, rsi, usd, pct])
     except Exception as e:
         logging.error(f"Error writing history for {chat_id}: {e}")
 
 
-# ─── Comandos ──────────────────────────────────────────────
+# — Comandos —
 async def start_command(
     update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE
 ):
     cid = update.effective_chat.id
     add_subscriber(cid)
-    await update.message.reply_text(
-        "👋 Bienvenido! Has sido suscrito.\n"
-        "Usa /registrar <precio> para definir tu referencia.\n"
-        "Mira /help para más comandos."
-    )
+    await update.message.reply_text("👋 ¡Bienvenido! Te has suscrito. Usa /help.")
 
 
 async def registrar_command(
@@ -104,11 +97,9 @@ async def registrar_command(
         val = float(context.args[0])
         save_last_buy_price(cid, val)
         add_subscriber(cid)
-        await update.message.reply_text(f"📝 Precio registrado: ${val:.2f}")
+        await update.message.reply_text(f"📝 Precio de compra registrado: ${val:.2f}")
     except:
-        await update.message.reply_text(
-            "❌ Uso: /registrar <precio> (ej: /registrar 95000)"
-        )
+        await update.message.reply_text("❌ Uso: /registrar <precio>")
 
 
 async def estado_command(
@@ -121,8 +112,8 @@ async def estado_command(
     du, dp = price - last, (price - last) / last * 100
     await update.message.reply_text(
         f"📊 Precio BTC: ${price:.2f}\n"
-        f"📌 Tu referencia: ${last:.2f}\n"
-        f"📈 Cambio: ${du:.2f} ({dp:.2f}%)"
+        f"📌 Tu compra: ${last:.2f}\n"
+        f"📈 Cambio: {du:+.2f} USD ({dp:+.2f}%)"
     )
 
 
@@ -133,7 +124,6 @@ async def historial_command(
     path = get_history_file(cid)
     if os.path.exists(path):
         await context.bot.send_document(chat_id=cid, document=InputFile(path))
-        await update.message.reply_text("📁 Historial enviado.")
     else:
         await update.message.reply_text("❌ No hay historial.")
 
@@ -148,7 +138,7 @@ async def reset_command(
     subs = load_subscribers()
     subs.discard(cid)
     save_subscribers(subs)
-    await update.message.reply_text("🔄 Datos reiniciados y desuscrito.")
+    await update.message.reply_text("🔄 Reiniciado y desuscrito.")
 
 
 async def help_command(
@@ -156,14 +146,59 @@ async def help_command(
 ):
     await update.message.reply_markdown(
         "📘 *Comandos:*\n"
-        "/start ==> Para registrarte y recibir señales.\n"
-        "/registrar <precio> ==> Para definir tu precio de referencia.\n"
-        "/estado ==> Para ver el precio actual y tu referencia.\n"
-        "/historial ==> Para descargar tu historial de operaciones.\n"
-        "/reset ==> Para reiniciar tus datos y desuscribirte.\n"
-        "/help ==> Para ver esta ayuda.\n"
-        "/ney ==> Para un comando especial oculto.\n\n"
+        "/start ⇒ Suscribirse\n"
+        "/registrar <precio> ⇒ Definir precio compra\n"
+        "/estado ⇒ Ver precio y cambio\n"
+        "/historial ⇒ Descargar historial\n"
+        "/reset ⇒ Reset y desuscribir\n"
+        "/compra <USD> ⇒ Estimación BTC\n"
+        "/venta <BTC> ⇒ Estimación USD\n"
+        "/ney ⇒ ¡Hola zorrito!\n"
+        "/help ⇒ Mostrar esta ayuda\n"
     )
+
+
+async def compra_command(
+    update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        amt = float(context.args[0])
+        df = strategy.get_data()
+        price = float(df.iloc[-1]["close"])
+        f_bin, f_pay = 0.001, 0.01
+        net_bin = amt * (1 - f_bin)
+        net_pay = amt * (1 - f_pay)
+        btc_bin = net_bin / price
+        btc_pay = net_pay / price
+        await update.message.reply_markdown(
+            f"💰 *Compra {amt:.2f} USD →*\n"
+            f"Precio: ${price:.2f}\n"
+            f"🏦 Binance: {btc_bin:.6f} BTC\n"
+            f"🏪 Paymonade: {btc_pay:.6f} BTC"
+        )
+    except:
+        await update.message.reply_text("❌ Uso: /compra <USD>")
+
+
+async def venta_command(
+    update: ContextTypes.DEFAULT_TYPE, context: ContextTypes.DEFAULT_TYPE
+):
+    try:
+        btc_amt = float(context.args[0])
+        df = strategy.get_data()
+        price = float(df.iloc[-1]["close"])
+        gross = btc_amt * price
+        f_bin, f_pay = 0.001, 0.01
+        net_bin = gross * (1 - f_bin)
+        net_pay = gross * (1 - f_pay)
+        await update.message.reply_markdown(
+            f"💵 *Venta {btc_amt:.6f} BTC →*\n"
+            f"Precio: ${price:.2f}\n"
+            f"🏦 Binance: ${net_bin:.2f}\n"
+            f"🏪 Paymonade: ${net_pay:.2f}"
+        )
+    except:
+        await update.message.reply_text("❌ Uso: /venta <BTC>")
 
 
 async def ney_command(
@@ -172,7 +207,7 @@ async def ney_command(
     await update.message.reply_text("Hola zorrito <3")
 
 
-# ─── Monitor / Señales ─────────────────────────────────────
+# — Monitor / Señales con IA —
 async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
     subs = load_subscribers()
     if not subs:
@@ -180,98 +215,68 @@ async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
 
     df = strategy.get_data()
     idx = len(df) - 1
-
-    # Glosario breve
-    glossary = (
-        "\n\n📘 *Leyenda:*"
-        "\n- SMA 9 vs SMA 21: promedios; su cruce indica giro de tendencia."
-        "\n- Bollinger Bands: banda gris de volatilidad; fuera → rebote o corrección."
-        "\n- Líneas punteadas: niveles ±2% desde tu compra (recomenda./comprar)."
-    )
-
     for cid in subs:
         last = load_last_buy_price(cid)
-
-        # Señal y métricas
         sig, reason, price, rsi, sf, sl, macd = strategy.analyze(df, last)
         du, dp = price - last, (price - last) / last * 100
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-        # Cálculo de máximos/mínimos reales
-        max_p = df["close"].max()
-        min_p = df["close"].min()
-
-        # Riesgo simple: basado en caída al mínimo
-        loss_pct = (min_p - last) / last * 100
-        risk = (
-            "🟢 BAJO"
-            if abs(loss_pct) < 2
-            else "🟠 MODERADO" if abs(loss_pct) < 5 else "🔴 ALTO"
-        )
-
-        # Índice aproximado de tu compra
         purchase_idx = (df["close"] - last).abs().idxmin()
 
-        # Gráfico
+        # 1️⃣ Gráfico
         buf = plot_signal(
             df, idx, sig or "NO_SIGNAL", buy_price=last, purchase_idx=purchase_idx
         )
         await context.bot.send_photo(chat_id=cid, photo=buf)
 
-        # Prepara targets recomendados
-        target_price = last * 1.02
-        stop_price = last * 0.98
+        # 2️⃣ Análisis técnico
+        target = last * 1.02
+        stop = last * 0.98
+        potential = (target - price) / price * 100
+        tech_map = {
+            "COMPRA": "- SMA9↑ sobre SMA21\n- MACD > señal\n- RSI < 70",
+            "VENTA": "- SMA9↓ bajo SMA21\n- MACD < señal\n- RSI > 30",
+            "RECOMPRA": "- Precio cayó >3%\n- RSI < 35 (sobreventa)",
+        }
+        tech_exp = tech_map.get(sig, "")
 
-        # Explicación técnica de la señal
-        if sig == "COMPRA":
-            tech = (
-                "\n\n📝 *Explicación señal:*"
-                "\n- SMA9 cruzó arriba de SMA21 → inicio de tendencia alcista."
-                "\n- MACD > señal → impulso comprador."
-                "\n- RSI < 70 → aún no está sobrecomprado."
-            )
-        elif sig == "VENTA":
-            tech = (
-                "\n\n📝 *Explicación señal:*"
-                "\n- SMA9 cruzó debajo de SMA21 → inicio de tendencia bajista."
-                "\n- MACD < señal → impulso vendedor."
-                "\n- RSI > 30 → aún no está sobrevendido."
-            )
-        else:
-            tech = ""
+        # 3️⃣ IA refuerza señal
+        ia_text = f"Precio {price:.2f}, SMA9 {sf:.2f}, SMA21 {sl:.2f}, MACD {macd:.2f}"
+        ia_sent = get_sentiment(ia_text)
 
-        # Construye el mensaje
-        header = f"[{ts}] {'🔔 '+sig if sig else '🔸 Sin señal clara'}"
-        body = (
-            f"\n\n💲 Precio actual: ${price:.2f}"
-            f"\n📌 Tu compra: ${last:.2f}"
-            f"\n📈 Desde tu compra: ${du:.2f} ({dp:.2f}%)"
-            f"\n🔼 Máx. recom. (vender): ${target_price:.2f}"
-            f"\n🔽 Mín. recom. (comprar): ${stop_price:.2f}"
-            f"\n⚠️ Riesgo: {risk}"
-            f"{tech}"
-            f"{glossary}"
+        # 4️⃣ Construir mensaje
+        msg = (
+            f"🚨 *Señal BTC: {sig or 'Monitoreo'}* ({ts})\n\n"
+            f"💲 Precio: ${price:.2f}\n"
+            f"📌 Compra: ${last:.2f}\n"
+            f"📈 Cambio: {du:+.2f} USD ({dp:+.2f}%)\n\n"
+            f"🔼 Máx recom. venta: ${target:.2f}\n"
+            f"🔽 Mín recom. compra: ${stop:.2f}\n"
+            f"💡 Potencial: {potential:.2f}%\n\n"
+            f"📝 Explicación técnica:\n{tech_exp}\n\n"
+            f"🤖 IA dice: {ia_sent}"
         )
 
-        await context.bot.send_message(
-            chat_id=cid, text=header + body, parse_mode="Markdown"
-        )
+        await context.bot.send_message(chat_id=cid, text=msg, parse_mode="Markdown")
 
     await asyncio.sleep(300)
 
 
-# Creamos y configuramos la app
+# — Arranque de la app —
 app = ApplicationBuilder().token(config.TELEGRAM_TOKEN).build()
-for cmd, handler in [
+for name, handler in [
     ("start", start_command),
     ("registrar", registrar_command),
     ("estado", estado_command),
     ("historial", historial_command),
     ("reset", reset_command),
     ("help", help_command),
+    ("compra", compra_command),
+    ("venta", venta_command),
     ("ney", ney_command),
 ]:
-    app.add_handler(CommandHandler(cmd, handler))
+    app.add_handler(CommandHandler(name, handler))
 
-# Programar monitor cada 5 minutos
 app.job_queue.run_repeating(monitor_job, interval=300, first=0)
+
+if __name__ == "__main__":
+    app.run_polling()
