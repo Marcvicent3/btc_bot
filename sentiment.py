@@ -1,11 +1,21 @@
-from transformers import pipeline
+from transformers import pipeline, logging
 
-classifier = pipeline("sentiment-analysis")
+# 1) Silenciar warnings de Transformers
+logging.set_verbosity_error()
+
+sentiment_analyzer = pipeline(
+    "sentiment-analysis",
+    model="distilbert/distilbert-base-uncased-finetuned-sst-2-english",
+    revision="714eb0f",
+)
 
 
 def get_sentiment(text: str) -> str:
-    result = classifier(text)[0]
-    label = result["label"]
-    score = result["score"]
-    emoji = "😃" if label == "POSITIVE" else "😐" if score < 0.85 else "😠"
-    return f"{label} {emoji} ({score:.2f})"
+    """
+    Devuelve algo como 'POSITIVE (0.97)' o 'NEGATIVE (0.65)'.
+    """
+    res = sentiment_analyzer(text, max_length=512)[0]
+    label = res["label"]
+    score = res["score"]
+    # Formateamos con dos decimales
+    return f"{label} ({score:.2f})"
