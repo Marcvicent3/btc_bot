@@ -10,7 +10,9 @@ venv/
 # Log files
 *.log
 *.csv
-*.txt
+subscribers.txt
+last_buy_*.txt
+
 
 # Environment variables
 .env

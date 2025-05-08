@@ -1,0 +1,15 @@
+python-binance==1.0.19
+pandas==2.2.2
+numpy==1.26.4
+ta==0.11.0
+python-telegram-bot[job-queue]==21.11.1
+nest_asyncio==1.6.0
+python-dotenv==1.0.1
+matplotlib==3.7.1
+transformers
+torch
+beautifulsoup4
+requests
+sentencepiece
+sacremoses
+flask
